@@ -1,6 +1,7 @@
 ﻿#region Install-LabSqlServers
 function Install-LabSqlServers
 {
+    # .ExternalHelp AutomatedLab.Help.xml
     [cmdletBinding()]
     param (
         [int]$InstallationTimeout = $PSCmdlet.MyInvocation.MyCommand.Module.PrivateData.Timeout_Sql2012Installation,
@@ -29,7 +30,7 @@ function Install-LabSqlServers
         return
     }
 
-    $machines = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014
+    $machines = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014, SQLServer2016
 
     #The dafault SQL installation in Azure does not give the standard buildin administrators group access.
     #This section adds the rights. As only the renamed Builtin Admin accout has permissions, Invoke-LabCommand cannot be used.
@@ -44,15 +45,7 @@ function Install-LabSqlServers
         Write-ScreenInfo -Message "Configuring Azure SQL Servers '$($azureMachines -join ', ')'"
         
         foreach ($machine in $azureMachines)
-        {
-            <#
-                    if (Invoke-LabCommand -ComputerName $machine -PassThru -NoDisplay -Verbose:$false -ScriptBlock {Get-Service -DisplayName "SQL Server (*)" -ErrorAction SilentlyContinue})
-                    {
-                    Write-ScreenInfo -Message "Machine '$machine' already has SQL Server. Machine needs to be removed and re-added with SQL Server role since it is deployed in Azure." -Type Warning
-                    continue
-                    }
-            #>
-            
+        {            
             Write-ScreenInfo -Type Verbose -Message "Configuring Azure SQL Server '$machine'"
             Write-ScreenInfo -Message (Get-Date)
             $sqlCmd = {
@@ -63,9 +56,14 @@ GO
 CREATE LOGIN [BUILTIN\Administrators] FROM WINDOWS WITH DEFAULT_DATABASE=[master], DEFAULT_LANGUAGE=[us_english]
 GO
 
-ALTER SERVER ROLE [sysadmin] ADD MEMBER [BUILTIN\Administrators]
+-- ALTER SERVER ROLE [sysadmin] ADD MEMBER [BUILTIN\Administrators]
+-- The folloing statement works in SQL 2008 to 2016
+EXEC master..sp_addsrvrolemember @loginame = N'BUILTIN\Administrators', @rolename = N'sysadmin'
 GO
 "@
+                if ((Get-PSSnapin -Registered -Name SqlServerCmdletSnapin100 -ErrorAction SilentlyContinue) -and -not (Get-PSSnapin -Name SqlServerCmdletSnapin100 -ErrorAction SilentlyContinue)) {
+                    Add-PSSnapin -Name SqlServerCmdletSnapin100
+                }
                 Invoke-Sqlcmd -Query $query
             }
 
@@ -76,36 +74,12 @@ GO
     
     $hypervMachines = @($machines | Where-Object HostType -eq HyperV)
     if ($hypervMachines)
-    {
-        if ((Get-LabMachine -Role SQLServer2008) -and -not ($lab.Sources.ISOs | Where-Object { $_.Name -eq 'SQLServer2008' }))
-        {
-            Write-LogFunctionExitWithError -Message "There is no ISO image available to install the role 'SQLServer2008'. Please add the required ISO to the lab and name it (warning: CaseSensitive) 'SQLServer2008'"
-            return
-        }
-        
-        if ((Get-LabMachine -Role SQLServer2008R2) -and -not ($lab.Sources.ISOs | Where-Object { $_.Name -eq 'SQLServer2008R2' }))
-        {
-            Write-LogFunctionExitWithError -Message "There is no ISO image available to install the role 'SQLServer2008R2'. Please add the required ISO to the lab and name it (warning: CaseSensitive) 'SQLServer2008R2'"
-            return
-        }
-        
-        if ((Get-LabMachine -Role SQLServer2012) -and -not ($lab.Sources.ISOs | Where-Object { $_.Name -eq 'SQLServer2012' }))
-        {
-            Write-LogFunctionExitWithError -Message "There is no ISO image available to install the role 'SQLServer2012'. Please add the required ISO to the lab and name it (warning: CaseSensitive) 'SQLServer2012'"
-            return
-        }
-        
-        if ((Get-LabMachine -Role SQLServer2014) -and -not ($lab.Sources.ISOs | Where-Object { $_.Name -eq 'SQLServer2014' }))
-        {
-            Write-LogFunctionExitWithError -Message "There is no ISO image available to install the role 'SQLServer2014'. Please add the required ISO to the lab and name it (warning: CaseSensitive) 'SQLServer2014'"
-            return
-        }
-        
+    {        
         $parallelInstalls = 4
         Write-ScreenInfo -Type Verbose -Message "Parallel installs: $parallelInstalls"
         $machineIndex = 0
         $installBatch = 0
-        $totalBatches = [math]::Ceiling($hypervMachines.count / $parallelInstalls)
+        $totalBatches = [System.Math]::Ceiling($hypervMachines.count / $parallelInstalls)
         do
         {
             $jobs = @()
@@ -120,10 +94,10 @@ GO
             $installFrameworkJobs = @()
             foreach ($m in $machinesBatch)
             {
-                Write-ScreenInfo -Message "Waiting for machine '$m' to be ready" -NoNewLine -Type Info
+                Write-ScreenInfo -Message "Waiting for machine '$m' to be ready" -Type Info
                 Wait-LabVM -ComputerName $m -ProgressIndicator 30
                 Write-ScreenInfo -Message "Starting installation of pre-requisite .Net 3.5 Framework on machine '$m'" -Type Info
-                $installFrameworkJobs = Install-LabWindowsFeature -ComputerName $m -FeatureName Net-Framework-Core -NoDisplay -AsJob -PassThru                
+                $installFrameworkJobs += Install-LabWindowsFeature -ComputerName $m -FeatureName Net-Framework-Core -NoDisplay -AsJob -PassThru                
             }
             
             Write-ScreenInfo -Message "Waiting for pre-requisite .Net 3.5 Framework to finish installation on machines '$($machinesBatch -join ', ')'" -NoNewLine
@@ -131,7 +105,6 @@ GO
             
             foreach ($machine in $machinesBatch)
             {
-                
                 $role = $machine.Roles | Where-Object Name -like SQLServer*
                 
                 #Dismounting ISO images to have just one drive later
@@ -162,6 +135,8 @@ GO
                 if ($result)
                 {
                     Write-ScreenInfo -Message "Machine '$machine' already has SQL Server installed with requested instance name '$instanceName'" -Type Warning
+                    $machine | Add-Member -Name SqlAlreadyInstalled -Value $true -MemberType NoteProperty
+                    $machineIndex++
                     continue
                 }
                 
@@ -232,7 +207,6 @@ GO
                 
                 $param = @{}
                 $param.Add('ComputerName', $machine)
-                $param.Add('UseCredSSP', $true)
                 $param.Add('ActivityName', 'Install SQL Server')
                 $param.Add('AsJob', $True)
                 $param.Add('PassThru', $True)
@@ -252,16 +226,14 @@ GO
                 
                 #Start other machines while waiting for SQL server to install
                 $startTime = Get-Date
-                $additionalMachinesToInstall = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014 | Where-Object { (Get-LabVMStatus -ComputerName $_.Name) -eq 'Stopped' }
+                $additionalMachinesToInstall = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014, SQLServer2016 |
+                Where-Object { (Get-LabVMStatus -ComputerName $_.Name) -eq 'Stopped' }
 
                 if ($additionalMachinesToInstall)
                 {
-                    #Start-LabVM -ComputerName $machinesToPrepare -DelayBetweenComputers 90 -ProgressIndicator 120 -NoNewline -Wait
-                    #Save-VM -Name $machinesToPrepare
-                    
                     Write-Verbose -Message 'Preparing more machines while waiting for installation to finish'
                     
-                    $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014 |
+                    $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014, SQLServer2016 |
                     Where-Object { (Get-LabVMStatus -ComputerName $_) -eq 'Stopped' } |
                     Select-Object -First 2
                     
@@ -281,14 +253,15 @@ GO
                         Write-Verbose -Message "Waiting for machines '$($machinesToPrepare -join ', ')' to be finish installation of pre-requisite .Net 3.5 Framework"
                         Wait-LWLabJob -Job $installFrameworkJobs -Timeout 10 -NoDisplay -ProgressIndicator 120 -NoNewLine
                         
-                        $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014 | Where-Object { (Get-LabVMStatus -ComputerName $_.Name) -eq 'Stopped' } | Select-Object -First 2
+                        $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014, SQLServer2016 | Where-Object { (Get-LabVMStatus -ComputerName $_.Name) -eq 'Stopped' } | Select-Object -First 2
                     }
                     Write-Verbose -Message "Resuming waiting for SQL Servers batch ($($machinesBatch -join ', ')) to complete installation and restart"
                 }
                 
-                Wait-LabVMRestart -ComputerName $machinesBatch -TimeoutInMinutes $InstallationTimeout -ProgressIndicator 120
+                $installMachines = $machinesBatch | Where-Object { -not $_.SqlAlreadyInstalled }
+                Wait-LabVMRestart -ComputerName $installMachines -TimeoutInMinutes $InstallationTimeout -ProgressIndicator 120
                 
-                Wait-LabVM -ComputerName $machinesBatch -PostDelaySeconds 30
+                Wait-LabVM -ComputerName $installMachines -PostDelaySeconds 30
                 
                 Dismount-LabIsoImage -ComputerName $machinesBatch -SupressOutput
                 
@@ -302,7 +275,7 @@ GO
         }
         until ($machineIndex -ge $hypervMachines.Count)
 	    
-        $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014
+        $machinesToPrepare = Get-LabMachine -Role SQLServer2008, SQLServer2008R2, SQLServer2012, SQLServer2014, SQLServer2016
         $machinesToPrepare = $machinesToPrepare | Where-Object { (Get-LabVMStatus -ComputerName $_) -ne 'Started' }
         if ($machinesToPrepare)
         {
@@ -312,7 +285,20 @@ GO
         Write-ScreenInfo -Message "All SQL Servers '$($hypervMachines -join ', ')' have now been installed and restarted. Waiting for these to be ready." -NoNewline
         
         Wait-LabVM -ComputerName $hypervMachines -TimeoutInMinutes 30 -ProgressIndicator 10
-        
+
+        $sql2016 = Get-LabVM -Role SQLServer2016
+
+		if ($sql2016)
+		{
+			$ssmsUri = $MyInvocation.MyCommand.Module.PrivateData.Sql2016ManagementStudio
+
+			Write-ScreenInfo -Message "Installing SQL Server 2016 Management Studio on machines '$($sql2016.Name -join ', ')'"
+			Get-LabInternetFile -Uri $ssmsUri -Path $global:labSources\SoftwarePackages\SSMS-Setup-ENU.exe
+
+			$jobs = Install-LabSoftwarePackage -Path $global:labSources\SoftwarePackages\SSMS-Setup-ENU.exe -CommandLine '/install /quiet' -ComputerName $sql2016 -AsJob -PassThru
+			Wait-LWLabJob -Job $jobs -Timeout 10 -NoDisplay -ProgressIndicator 60 -NoNewLine
+		}
+
         if ($CreateCheckPoints)
         {
             Checkpoint-LabVM -ComputerName $machines -SnapshotName 'Post SQL Server Installation'

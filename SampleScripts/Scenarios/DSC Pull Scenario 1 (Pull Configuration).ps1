@@ -18,7 +18,6 @@ $labName = 'DSCLab1'
 #----------------------- + EXCEPT FOR THE LINES CONTAINING A PATH TO AN ISO OR APP   --------------------------------
 #--------------------------------------------------------------------------------------------------------------------
 
-$labSources = Get-LabSourcesLocation
 
 #create an empty lab template and define where the lab XML files and the VMs will be stored
 New-LabDefinition -Name $labName -DefaultVirtualizationEngine HyperV
@@ -54,7 +53,8 @@ Add-LabMachineDefinition -Name DRouter -Roles Routing -NetworkAdapter $netAdapte
 Add-LabMachineDefinition -Name DCA1 -Roles CaRoot
 
 #DSC Pull Server
-Add-LabMachineDefinition -Name DPull1 -Roles DSCPullServer
+$role = Get-LabMachineRoleDefinition -Role DSCPullServer -Properties @{ DatabaseEngine = 'mdb' }
+Add-LabMachineDefinition -Name DPull1 -Roles $role
 
 #DSC Pull Clients
 Add-LabMachineDefinition -Name DServer1
@@ -71,4 +71,4 @@ Get-Job -Name 'Installation of*' | Wait-Job | Out-Null
 
 Install-LabDscClient -All
 
-Show-LabInstallationTime
+Show-LabDeploymentSummary -Detailed

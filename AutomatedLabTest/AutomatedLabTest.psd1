@@ -1,5 +1,5 @@
 @{
-	ModuleToProcess = 'AutomatedLabTest.psm1'
+	RootModule = 'AutomatedLabTest.psm1'
 	
 	ModuleVersion = '3.8.0.1'
 	
@@ -23,7 +23,7 @@
 	
 	FunctionsToExport = @('Test-LabDeployment', 'Import-LabTestResult')
 	
-	ModuleList = @('AutomatedLabTest.psm1')
+	ModuleList = @('AutomatedLabTest')
 	
 	FileList = @('AutomatedLabTest.format.ps1xml', 'AutomatedLabTest.psm1', 'AutomatedLabTest.psd1')
 	
